@@ -24,6 +24,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-g", "--group-by", default=None, help="Columna por la que agrupar")
     p.add_argument("-m", "--metric", action="append", dest="metrics",
                    help="Columna numerica a sumar (repetible). Si se omite, se autodetectan.")
+    p.add_argument("-a", "--alert", action="append", dest="alerts",
+                   help="Regla de alerta 'columna>valor' (repetible). Ej: -a \"errors>5\".")
     p.add_argument("--no-html", action="store_true", help="No generar HTML")
     p.add_argument("--no-excel", action="store_true", help="No generar Excel")
     p.add_argument("--email-to", action="append", dest="email_to",
@@ -62,6 +64,7 @@ def run(args: argparse.Namespace) -> int:
         title=args.title,
         group_by=args.group_by,
         metrics=args.metrics,
+        rules=args.alerts,
     )
 
     out_dir = Path(args.output)
@@ -79,13 +82,18 @@ def run(args: argparse.Namespace) -> int:
         generated.append(xlsx_path)
         print(f"[shiftreport] Excel -> {xlsx_path}")
 
+    n_alerts = len(summary.alerts)
+    if n_alerts:
+        print(f"[shiftreport] ATENCION: {n_alerts} alerta(s) detectada(s).")
+
     if args.email_to:
         from .emailer import EmailConfigError, send_report
         from .report import build_html
+        prefix = f"[{n_alerts} alertas] " if n_alerts else ""
         try:
             send_report(
                 to=args.email_to,
-                subject=f"{args.title} - {summary.generated_at}",
+                subject=f"{prefix}{args.title} - {summary.generated_at}",
                 html_body=build_html(summary),
                 attachments=generated,
             )

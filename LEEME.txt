@@ -1,0 +1,14 @@
+SHIFTREPORT GENERATOR
+=====================
+
+Para usar la app:  doble clic en  ShiftReport.exe
+
+Que hace:
+  1) Eliges un archivo CSV o Excel de turno.
+  2) Eliges por que columna agrupar (area, linea...).
+  3) Clic en "Generar reporte".
+  4) Se crea la carpeta shiftreport_outputs con el Excel + HTML.
+
+Archivo de ejemplo para probar:  examples\sample_shift_data.csv
+
+(El resto de carpetas son codigo y desarrollo; no necesitas tocarlas.)

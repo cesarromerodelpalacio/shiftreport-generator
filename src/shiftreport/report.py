@@ -1,4 +1,4 @@
-"""Agregacion de datos y generacion de reportes (HTML + Excel)."""
+"""Agregacion de datos y generacion de reportes (HTML + Excel) con alertas."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .reader import _to_number, detect_numeric_columns
+from .alerts import evaluate_alerts
 
 
 @dataclass
@@ -18,6 +19,7 @@ class Summary:
     metrics: list[str]
     groups: list[dict] = field(default_factory=list)
     totals: dict = field(default_factory=dict)
+    alerts: list[dict] = field(default_factory=list)
 
 
 def summarize(
@@ -27,8 +29,9 @@ def summarize(
     title: str = "Reporte de turno",
     group_by: str | None = None,
     metrics: list[str] | None = None,
+    rules: list[str] | None = None,
 ) -> Summary:
-    """Agrega filas por una columna y suma las metricas numericas."""
+    """Agrega filas por una columna, suma metricas y evalua reglas de alerta."""
     if metrics is None:
         auto = detect_numeric_columns(headers, rows)
         metrics = [m for m in auto if m != group_by]
@@ -54,6 +57,7 @@ def summarize(
                 bucket["sums"][m] += num
 
     groups = sorted(grouped.values(), key=lambda g: g["count"], reverse=True)
+    alerts = evaluate_alerts(headers, rows, rules) if rules else []
 
     return Summary(
         title=title,
@@ -63,6 +67,7 @@ def summarize(
         metrics=metrics,
         groups=groups,
         totals={"count": len(rows), "sums": totals},
+        alerts=alerts,
     )
 
 
@@ -84,12 +89,33 @@ def build_html(summary: Summary) -> str:
     totals_cells = "".join(f"<td>{_fmt(summary.totals['sums'][m])}</td>" for m in summary.metrics)
     group_label = summary.group_by or "Grupo"
 
+    n_alerts = len(summary.alerts)
+    alert_card = ""
+    if summary.alerts:
+        alert_card = f'<div class="card alert"><div class="n">{n_alerts}</div><div class="l">Alertas</div></div>'
+
     cards = (
         f'<div class="card"><div class="n">{_fmt(summary.row_count)}</div><div class="l">Registros</div></div>'
         f'<div class="card"><div class="n">{len(summary.groups)}</div><div class="l">{group_label}s</div></div>'
+        f'{alert_card}'
     )
     for m in summary.metrics[:2]:
         cards += f'<div class="card"><div class="n">{_fmt(summary.totals["sums"][m])}</div><div class="l">{m}</div></div>'
+
+    alerts_block = ""
+    if summary.alerts:
+        arows = ""
+        for a in summary.alerts:
+            ctx = a["row"].get(summary.group_by) if summary.group_by else f"Fila {a['index'] + 1}"
+            arows += (
+                f"<tr><td class='k'>{ctx}</td><td>{a['metric']}</td>"
+                f"<td class='bad'>{_fmt(a['value'])}</td><td>{a['op']} {_fmt(a['threshold'])}</td></tr>"
+            )
+        alerts_block = (
+            '<div class="alerts"><h2>&#9888; Alertas (' + str(n_alerts) + ')</h2>'
+            '<table><thead><tr><th>' + group_label + '</th><th>Metrica</th>'
+            '<th>Valor</th><th>Regla</th></tr></thead><tbody>' + arows + '</tbody></table></div>'
+        )
 
     style = """
   body{font-family:'Segoe UI',Arial,sans-serif;background:#f4f7fa;color:#1b2836;margin:0;padding:32px}
@@ -98,15 +124,20 @@ def build_html(summary: Summary) -> str:
   .head h1{margin:0;font-size:26px}
   .head p{margin:6px 0 0;color:#8aa0b2;font-size:14px}
   .cards{display:flex;gap:16px;padding:24px 36px;flex-wrap:wrap}
-  .card{flex:1;min-width:140px;background:#f0f5f8;border:1px solid #e1e9ef;border-radius:12px;padding:18px}
+  .card{flex:1;min-width:130px;background:#f0f5f8;border:1px solid #e1e9ef;border-radius:12px;padding:18px}
   .card .n{font-size:30px;font-weight:800;color:#0ea5a0}
   .card .l{color:#5a6b7a;font-size:13px;margin-top:4px}
+  .card.alert{background:#fdecec;border-color:#f5c2c2}
+  .card.alert .n{color:#d64545}
   table{width:100%;border-collapse:collapse;margin:8px 0 0}
   th,td{padding:12px 36px;text-align:right;font-size:14px;border-bottom:1px solid #eef2f5}
   th:first-child,td:first-child{text-align:left}
   thead th{background:#f7fafc;color:#5a6b7a;text-transform:uppercase;font-size:12px;letter-spacing:.05em}
   td.k{font-weight:600}
+  td.bad{color:#d64545;font-weight:800}
   tfoot td{font-weight:800;background:#0f1720;color:#fff}
+  .alerts{padding:20px 0 0}
+  .alerts h2{padding:20px 36px 0;margin:0;font-size:18px;color:#d64545}
   .foot{padding:18px 36px;color:#8aa0b2;font-size:12px;border-top:1px solid #eef2f5}
 """
 
@@ -121,6 +152,7 @@ def build_html(summary: Summary) -> str:
         f"    <tbody>{rows_html}</tbody>\n"
         f'    <tfoot><tr><td>Total</td><td>{_fmt(summary.row_count)}</td>{totals_cells}</tr></tfoot>\n'
         "  </table>\n"
+        f"  {alerts_block}\n"
         '  <div class="foot">ShiftReport Generator - Cesar Romero del Palacio</div>\n'
         "</div></body></html>"
     )
@@ -134,7 +166,7 @@ def write_html(summary: Summary, out_path: str | Path) -> Path:
 
 
 def write_excel(summary: Summary, rows: list[dict], headers: list[str], out_path: str | Path) -> Path:
-    """Genera un Excel con hoja de resumen + hoja de detalle."""
+    """Genera un Excel con hoja de resumen, detalle y (si hay) alertas."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
 
@@ -145,6 +177,8 @@ def write_excel(summary: Summary, rows: list[dict], headers: list[str], out_path
     head_fill = PatternFill("solid", fgColor="0F1720")
     head_font = Font(color="FFFFFF", bold=True)
     accent_font = Font(color="0EA5A0", bold=True)
+    bad_fill = PatternFill("solid", fgColor="FDECEC")
+    bad_font = Font(color="D64545", bold=True)
 
     ws = wb.active
     ws.title = "Resumen"
@@ -152,6 +186,9 @@ def write_excel(summary: Summary, rows: list[dict], headers: list[str], out_path
     ws["A1"].font = Font(size=16, bold=True)
     ws["A2"] = f"Generado el {summary.generated_at}"
     ws["A2"].font = Font(color="8AA0B2")
+    if summary.alerts:
+        ws["A3"] = f"ALERTAS: {len(summary.alerts)}"
+        ws["A3"].font = bad_font
 
     header = [summary.group_by or "Grupo", "Registros", *summary.metrics]
     ws.append([])
@@ -180,6 +217,18 @@ def write_excel(summary: Summary, rows: list[dict], headers: list[str], out_path
     for r in rows:
         wd.append([r.get(h) for h in headers])
     wd.freeze_panes = "A2"
+
+    if summary.alerts:
+        wa = wb.create_sheet("Alertas")
+        wa.append(["Regla", "Metrica", "Valor", *headers])
+        for cell in wa[1]:
+            cell.fill = head_fill
+            cell.font = head_font
+        for a in summary.alerts:
+            wa.append([a["rule"], a["metric"], a["value"], *[a["row"].get(h) for h in headers]])
+            for cell in wa[wa.max_row]:
+                cell.fill = bad_fill
+        wa.freeze_panes = "A2"
 
     wb.save(p)
     return p
